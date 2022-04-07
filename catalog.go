@@ -39,17 +39,13 @@ func InitializeCatalog(filename string) (cat *Catalog, err error) {
 		sm:         sm,
 		bm:         bm,
 	}, nil
-	
-}
 
-func (c *Catalog) GetPage(pageNum uint64) (page Page) {
-	return nil
 }
 
 func initCatalogPages() Page {
 	page0 := BPTreeKeyValuePage{
-		isLeaf: true,
-		len:    1,
+		isLeaf:       true,
+		numberOfKeys: 1,
 	}
 	page0.keys = append(page0.keys, 0)
 	page0.values = append(page0.keys, 0)
@@ -57,9 +53,17 @@ func initCatalogPages() Page {
 }
 
 func initAccountsPages() Page {
-	page1 := BPTreeKeyValueIndexPage{
+	page1 := BPTreeAddressValuePage{
 		isLeaf: true,
-		len:    0,
+		numberOfAddresses:    0,
 	}
 	return &page1
+}
+
+func (c *Catalog) close() error {
+	err := c.bm.close()
+	if err != nil {
+		return err
+	}
+	return c.sm.close()
 }
