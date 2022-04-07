@@ -1,6 +1,7 @@
 package bptree
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -12,18 +13,16 @@ import (
 
 func TestCatalog(t *testing.T) {
 
-	cat, err := InitializeCatalog("test.yaai")
-	require.NoError(t, err)
-	err = cat.close()
+	tmpdir := t.TempDir()
+
+	cat, err := InitializeCatalog(tmpdir + "/test.yaai", false)
+	require.True(t, errors.Is(err, os.ErrNotExist), "ErrNotExist expected")
+
+	cat, err = InitializeCatalog(tmpdir + "/test.yaai", true)
 	require.NoError(t, err)
 
-	
-	f, err := os.OpenFile("notes.txt", os.O_RDWR, 0755)
-	if err != nil {
-		fmt.Println(err)
-	}
-	if err := f.Close(); err != nil {
-		fmt.Println(err)
-	}
+
+	err = cat.close()
+	require.NoError(t, err)
 
 }

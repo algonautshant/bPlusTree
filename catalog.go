@@ -1,6 +1,8 @@
 package bptree
 
 import (
+	"errors"
+	"os"
 	"fmt"
 )
 
@@ -20,20 +22,25 @@ func (ose OversizeError) Error() string {
 
 type Catalog struct {
 	dbFilename string
-	sm         StorageManager
-	bm         BufferManager
+	sm         *storageManager
+	bm         *bufferManager
 }
 
 // InitializeCatalog initializes a new storage. It writes the first page
 // with page 0 at index 0 in the file.
-func InitializeCatalog(filename string) (cat *Catalog, err error) {
-	sm, err := initStorageManager(filename)
+func InitializeCatalog(filename string, createNew bool) (cat *Catalog, err error) {
+	
+	sm, err := openStorageManager(filename)
+	if createNew && errors.Is(err, os.ErrNotExist) {
+		sm, err = initStorageManager(filename)		
+	}
+	
 	if err != nil {
 		return nil, err
 	}
 	catPage0 := initCatalogPages()
 	sm.writeFirstPage(catPage0)
-	bm := BufferManager{}
+	bm := &bufferManager{}
 	return &Catalog{
 		dbFilename: filename,
 		sm:         sm,
@@ -42,9 +49,9 @@ func InitializeCatalog(filename string) (cat *Catalog, err error) {
 
 }
 
-func initCatalogPages() Page {
-	page0 := BPTreeKeyValuePage{
-		isLeaf:       true,
+func initCatalogPages() page {
+	page0 := bPTreeKeyValuePage{
+		leaf:       true,
 		numberOfKeys: 1,
 	}
 	page0.keys = append(page0.keys, 0)
@@ -52,9 +59,9 @@ func initCatalogPages() Page {
 	return &page0
 }
 
-func initAccountsPages() Page {
-	page1 := BPTreeAddressValuePage{
-		isLeaf: true,
+func initAccountsPages() page {
+	page1 := bPTreeAddressValuePage{
+		leaf: true,
 		numberOfAddresses:    0,
 	}
 	return &page1

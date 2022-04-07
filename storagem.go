@@ -14,32 +14,32 @@ const (
 
 // FileOffset is where the page is written in the file
 // It is HEADER_SIZE + PAGE_SIZE*(#pages before)
-type FileOffset uint64
+type fileOffset uint64
 
 // FileOffsetPageIndex combines the page location in the file
 // and an offset inside the page. The offset inside the page
 // corresponds to the element array index and not actual byte index.
-type FileOffsetPageIndex uint64
+type fileOffsetPageIndex uint64
 
 // GetElementIndexInPage returns the element array index inside the page
-func (fopi FileOffsetPageIndex) GetElementIndexInPage() int {
+func (fopi fileOffsetPageIndex) getElementIndexInPage() int {
 	return int((uint64(fopi) - HEADER_SIZE) % PAGE_SIZE)
 }
 
 // GetFileOffset returns the offset of the page inside the file
-func (fopi FileOffsetPageIndex) GetFileOffset() FileOffset {
-	return FileOffset(uint64(fopi) - uint64(fopi.GetElementIndexInPage()))
+func (fopi fileOffsetPageIndex) getFileOffset() fileOffset {
+	return fileOffset(uint64(fopi) - uint64(fopi.getElementIndexInPage()))
 }
 
-func GetFileOffsetPageIndex(fileOffset FileOffset, elementIndex int) FileOffsetPageIndex {
-	return FileOffsetPageIndex(uint64(fileOffset) + uint64(elementIndex))
+func getFileOffsetPageIndex(fileOffset fileOffset, elementIndex int) fileOffsetPageIndex {
+	return fileOffsetPageIndex(uint64(fileOffset) + uint64(elementIndex))
 }
 
-func (fopi FileOffsetPageIndex) AddToElementIndex(a int) FileOffsetPageIndex {
-	return FileOffsetPageIndex(uint64(fopi) + uint64(a))
+func (fopi fileOffsetPageIndex) addToElementIndex(a int) fileOffsetPageIndex {
+	return fileOffsetPageIndex(uint64(fopi) + uint64(a))
 }
 
-type StorageManager struct {
+type storageManager struct {
 	fd     *os.File
 	header header
 	mu     sync.Mutex
@@ -48,13 +48,13 @@ type StorageManager struct {
 type header struct {
 	pageSize        uint64
 	numberOfPages   uint64
-	nextPageOffset  FileOffset
-	firstPageOffset FileOffset
+	nextPageOffset  fileOffset
+	firstPageOffset fileOffset
 
-	flatKVFileEndOffset []FileOffset
+	flatKVFileEndOffset []fileOffset
 }
 
-func (sm *StorageManager) writeHeader() error {
+func (sm *storageManager) writeHeader() error {
 	var hBuff [HEADER_SIZE]byte
 	offset := 0
 	binary.BigEndian.PutUint64(hBuff[offset:offset+8], sm.header.pageSize)
@@ -79,7 +79,7 @@ func (sm *StorageManager) writeHeader() error {
 	return nil
 }
 
-func (sm *StorageManager) readHeader() error {
+func (sm *storageManager) readHeader() error {
 	var hBuff [HEADER_SIZE]byte
 	n, err := sm.fd.ReadAt(hBuff[:], 0)
 	if err != nil {
@@ -94,23 +94,23 @@ func (sm *StorageManager) readHeader() error {
 	offset += 8
 	sm.header.numberOfPages = binary.BigEndian.Uint64(hBuff[offset : offset+8])
 	offset += 8
-	sm.header.nextPageOffset = FileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
+	sm.header.nextPageOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
 	offset += 8
 
 	for x := 0; x < 11; x++ {
 		sm.header.flatKVFileEndOffset = append(sm.header.flatKVFileEndOffset,
-			FileOffset(binary.BigEndian.Uint64(hBuff[offset:offset+8])))
+			fileOffset(binary.BigEndian.Uint64(hBuff[offset:offset+8])))
 		offset += 8
 	}
 	return nil
 }
 
-func openStorageManager(filename string) (sm *StorageManager, err error) {
+func openStorageManager(filename string) (sm *storageManager, err error) {
 	f, err := os.OpenFile(filename, os.O_RDWR, 0755)
 	if err != nil {
 		return nil, err
 	}
-	sm = &StorageManager{fd: f}
+	sm = &storageManager{fd: f}
 	err = sm.readHeader()
 	if err != nil {
 		return nil, err
@@ -118,40 +118,40 @@ func openStorageManager(filename string) (sm *StorageManager, err error) {
 	return sm, nil
 }
 
-func initStorageManager(filename string) (sm StorageManager, err error) {
+func initStorageManager(filename string) (sm *storageManager, err error) {
 	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
-		return StorageManager{}, err
+		return nil, err
 	}
-	sm = StorageManager{fd: f}
+	sm = &storageManager{fd: f}
 	sm.header = header{
 		pageSize:                PAGE_SIZE,
 		numberOfPages:           0,
 		nextPageOffset:          HEADER_SIZE,
 		firstPageOffset:         HEADER_SIZE,
-		flatKVFileEndOffset: make([]FileOffset, 0),
+		flatKVFileEndOffset: make([]fileOffset, 0),
 	}
 	err = sm.writeHeader()
 	if err != nil {
-		return StorageManager{}, err
+		return nil, err
 	}
 	return sm, nil
 }
 
-func (sm *StorageManager) newPage() (fileOffset FileOffset, err error) {
+func (sm *storageManager) newPage() (newPageFileOffset fileOffset, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.header.numberOfPages++
-	fileOffset = sm.header.nextPageOffset
-	sm.header.nextPageOffset += FileOffset(sm.header.pageSize)
+	newPageFileOffset = sm.header.nextPageOffset
+	sm.header.nextPageOffset += fileOffset(sm.header.pageSize)
 	err = sm.writeHeader()
 	if err != nil {
 		return 0, err
 	}
-	return fileOffset, nil
+	return newPageFileOffset, nil
 }
 
-func (sm *StorageManager) writeFirstPage(page Page) error {
+func (sm *storageManager) writeFirstPage(page page) error {
 	np, err := sm.newPage()
 	if err != nil {
 		return err
@@ -162,9 +162,9 @@ func (sm *StorageManager) writeFirstPage(page Page) error {
 	return nil
 }
 
-func (sm *StorageManager) writePage(page Page, fileOffset FileOffset) error {
+func (sm *storageManager) writePage(page page, fileOffset fileOffset) error {
 	var buffer [PAGE_SIZE]byte
-	bytes, err := page.Marshal(buffer[:])
+	bytes, err := page.marshal(buffer[:])
 	if err != nil {
 		return err
 	}
@@ -182,11 +182,11 @@ func (sm *StorageManager) writePage(page Page, fileOffset FileOffset) error {
 	return nil
 }
 
-func (sm *StorageManager) readFirstPage() (page Page, err error) {
+func (sm *storageManager) readFirstPage() (page page, err error) {
 	return sm.readPage(sm.header.firstPageOffset)
 }
 
-func (sm *StorageManager) readPage(fileOffset FileOffset) (page Page, err error) {
+func (sm *storageManager) readPage(fileOffset fileOffset) (page page, err error) {
 	var buffer [PAGE_SIZE]byte
 
 	sm.mu.Lock()
@@ -195,10 +195,10 @@ func (sm *StorageManager) readPage(fileOffset FileOffset) (page Page, err error)
 	if err != nil {
 		return nil, err
 	}
-	return Unmarshal(buffer[:])
+	return unmarshal(buffer[:])
 }
 
-func (sm *StorageManager) close() error {
+func (sm *storageManager) close() error {
 	err := sm.fd.Close()
 	return err
 }

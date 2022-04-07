@@ -4,33 +4,33 @@ import (
 	"sync"
 )
 
-type BufferManager struct {
-	pool                   []Page
+type bufferManager struct {
+	pool                   []page
 	dirty                  []bool
-	bufferIndexToFileOffset map[uint64]FileOffset
-	fileOffsetToBufferIndex map[FileOffset]uint64
+	bufferIndexToFileOffset map[uint64]fileOffset
+	fileOffsetToBufferIndex map[fileOffset]uint64
 	mru                    mru
 
-	sm *StorageManager
+	sm *storageManager
 	mu sync.Mutex
 
 	flatKeyValuePageMu sync.Mutex
 }
 
-func getBufferManager(sm *StorageManager) BufferManager {
-	bm := BufferManager{
-		pool:                   make([]Page, 0, NUMBER_OF_BUFFER_POOL_PAGES),
+func getBufferManager(sm *storageManager) bufferManager {
+	bm := bufferManager{
+		pool:                   make([]page, 0, NUMBER_OF_BUFFER_POOL_PAGES),
 		dirty:                  make([]bool, NUMBER_OF_BUFFER_POOL_PAGES),
-		fileOffsetToBufferIndex: make(map[FileOffset]uint64, NUMBER_OF_BUFFER_POOL_PAGES),
-		bufferIndexToFileOffset: make(map[uint64]FileOffset, NUMBER_OF_BUFFER_POOL_PAGES),
+		fileOffsetToBufferIndex: make(map[fileOffset]uint64, NUMBER_OF_BUFFER_POOL_PAGES),
+		bufferIndexToFileOffset: make(map[uint64]fileOffset, NUMBER_OF_BUFFER_POOL_PAGES),
 		sm:                     sm,
 		mru:                    getMru(),
 	}
 	return bm
 }
 
-// ReadPage reads a page if not in the pool, and returns the pool index
-func (bm *BufferManager) ReadPage(fileIndex FileOffset) Page {
+// readPage reads a page if not in the pool, and returns the pool index
+func (bm *bufferManager) readPage(fileIndex fileOffset) page {
 	if i, found := bm.fileOffsetToBufferIndex[fileIndex]; found {
 		bm.mru.updateUse(i)
 		return bm.pool[i]
@@ -43,7 +43,7 @@ func (bm *BufferManager) ReadPage(fileIndex FileOffset) Page {
 	return page
 }
 
-func (bm *BufferManager) AddNewPage(page Page) (fileIndex FileOffset, err error) {
+func (bm *bufferManager) addNewPage(page page) (fileIndex fileOffset, err error) {
 	fileIndex, err = bm.sm.newPage()
 	if err != nil {
 		return 0, err
@@ -71,7 +71,7 @@ func (bm *BufferManager) AddNewPage(page Page) (fileIndex FileOffset, err error)
 	}
 }
 
-func (bm *BufferManager) evictPage() (freePoolIdx uint64, err error) {
+func (bm *bufferManager) evictPage() (freePoolIdx uint64, err error) {
 	// expects the lock is already held
 	pageToEvict := bm.mru.removeLeastUsed() // todo: take care of error/undo mru
 	if bm.dirty[pageToEvict] {
@@ -86,7 +86,7 @@ func (bm *BufferManager) evictPage() (freePoolIdx uint64, err error) {
 	return pageToEvict, nil
 }
 
-func (bm *BufferManager) close() error {
+func (bm *bufferManager) close() error {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
 	for len(bm.bufferIndexToFileOffset) > 0 {
