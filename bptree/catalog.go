@@ -20,15 +20,15 @@ func (ose OversizeError) Error() string {
 	return fmt.Sprintf("Page overflow %d elements in %s", ose.elements, ose.caller)
 }
 
-type Catalog struct {
+type catalog struct {
 	dbFilename string
 	sm         *storageManager
 	bm         *bufferManager
 }
 
-// InitializeCatalog initializes a new storage. It writes the first page
+// initializeCatalog initializes a new storage. It writes the first page
 // with page 0 at index 0 in the file.
-func InitializeCatalog(filename string, createNew bool) (cat *Catalog, err error) {
+func initializeCatalog(filename string, createNew bool) (cat *catalog, err error) {
 	
 	sm, err := openStorageManager(filename)
 	if createNew && errors.Is(err, os.ErrNotExist) {
@@ -40,8 +40,15 @@ func InitializeCatalog(filename string, createNew bool) (cat *Catalog, err error
 	}
 	catPage0 := initCatalogPages()
 	sm.writeFirstPage(catPage0)
-	bm := &bufferManager{}
-	return &Catalog{
+	bm := getBufferManager(sm)
+
+	fileIndex, headAccountPage, err  := getEmptyBPTreeAddressValuePage(bm)
+	if err != nil {
+		return nil, err
+	}
+	headAccountPage.pinned = true
+	sm.header.accountsHeadOffset = fileIndex
+	return &catalog{
 		dbFilename: filename,
 		sm:         sm,
 		bm:         bm,
@@ -59,15 +66,7 @@ func initCatalogPages() page {
 	return &page0
 }
 
-func initAccountsPages() page {
-	page1 := bPTreeAddressValuePage{
-		leaf: true,
-		numberOfAddresses:    0,
-	}
-	return &page1
-}
-
-func (c *Catalog) close() error {
+func (c *catalog) close() error {
 	err := c.bm.close()
 	if err != nil {
 		return err

@@ -3,13 +3,14 @@ package bptree
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 )
 
 const (
 	PAGE_SIZE   = 4096
-	HEADER_SIZE = 36 // 24 + log2(PAGE_SIZE)
+	HEADER_SIZE = 128 // 32 + 8*log2(PAGE_SIZE)
 )
 
 // FileOffset is where the page is written in the file
@@ -48,8 +49,10 @@ type storageManager struct {
 type header struct {
 	pageSize        uint64
 	numberOfPages   uint64
-	nextPageOffset  fileOffset
+	newPageOffset   fileOffset
 	firstPageOffset fileOffset
+
+	accountsHeadOffset fileOffset
 
 	flatKVFileEndOffset []fileOffset
 }
@@ -61,7 +64,9 @@ func (sm *storageManager) writeHeader() error {
 	offset += 8
 	binary.BigEndian.PutUint64(hBuff[offset:offset+8], sm.header.numberOfPages)
 	offset += 8
-	binary.BigEndian.PutUint64(hBuff[offset:offset+8], uint64(sm.header.nextPageOffset))
+	binary.BigEndian.PutUint64(hBuff[offset:offset+8], uint64(sm.header.newPageOffset))
+	offset += 8
+	binary.BigEndian.PutUint64(hBuff[offset:offset+8], uint64(sm.header.accountsHeadOffset))
 	offset += 8
 
 	for _, x := range sm.header.flatKVFileEndOffset {
@@ -94,7 +99,9 @@ func (sm *storageManager) readHeader() error {
 	offset += 8
 	sm.header.numberOfPages = binary.BigEndian.Uint64(hBuff[offset : offset+8])
 	offset += 8
-	sm.header.nextPageOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
+	sm.header.newPageOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
+	offset += 8
+	sm.header.accountsHeadOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
 	offset += 8
 
 	for x := 0; x < 11; x++ {
@@ -125,11 +132,11 @@ func initStorageManager(filename string) (sm *storageManager, err error) {
 	}
 	sm = &storageManager{fd: f}
 	sm.header = header{
-		pageSize:                PAGE_SIZE,
-		numberOfPages:           0,
-		nextPageOffset:          HEADER_SIZE,
-		firstPageOffset:         HEADER_SIZE,
-		flatKVFileEndOffset: make([]fileOffset, 0),
+		pageSize:            PAGE_SIZE,
+		numberOfPages:       0,
+		newPageOffset:       HEADER_SIZE,
+		firstPageOffset:     HEADER_SIZE,
+		flatKVFileEndOffset: make([]fileOffset, int(math.Log2(float64((&flatKeyValuePage{}).maxNumberOfElements())))),
 	}
 	err = sm.writeHeader()
 	if err != nil {
@@ -142,8 +149,8 @@ func (sm *storageManager) newPage() (newPageFileOffset fileOffset, err error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.header.numberOfPages++
-	newPageFileOffset = sm.header.nextPageOffset
-	sm.header.nextPageOffset += fileOffset(sm.header.pageSize)
+	newPageFileOffset = sm.header.newPageOffset
+	sm.header.newPageOffset += fileOffset(sm.header.pageSize)
 	err = sm.writeHeader()
 	if err != nil {
 		return 0, err

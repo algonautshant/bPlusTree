@@ -3,13 +3,13 @@ package bptree
 type mru struct {
 	mruListHead           *llist
 	mruListTail           *llist
-	bufferIndexToListNode map[uint64]*llist
+	bufferIndexToListNode map[int]*llist
 }
 
 type llist struct {
 	next        *llist
 	prev        *llist
-	bufferIndex uint64
+	bufferIndex int
 }
 
 func getMru() mru {
@@ -22,13 +22,13 @@ func getMru() mru {
 	u := mru{
 		mruListHead:           head,
 		mruListTail:           tail,
-		bufferIndexToListNode: make(map[uint64]*llist),
+		bufferIndexToListNode: make(map[int]*llist),
 	}
 
 	return u
 }
 
-func (u *mru) addUse(bufferIndex uint64) {
+func (u *mru) addUse(bufferIndex int) {
 	node := &llist{bufferIndex: bufferIndex}
 	u.bufferIndexToListNode[bufferIndex] = node
 
@@ -39,7 +39,7 @@ func (u *mru) addUse(bufferIndex uint64) {
 	u.mruListHead.next = node
 }
 
-func (u *mru) removeUse(bufferIndex uint64) {
+func (u *mru) removeUse(bufferIndex int) {
 	node := u.bufferIndexToListNode[bufferIndex]
 	// remove the node
 	node.prev.next = node.next
@@ -47,7 +47,7 @@ func (u *mru) removeUse(bufferIndex uint64) {
 	delete(u.bufferIndexToListNode, bufferIndex)
 }
 
-func (u *mru) updateUse(bufferIndex uint64) {
+func (u *mru) updateUse(bufferIndex int) {
 	node := u.bufferIndexToListNode[bufferIndex]
 	// remove the node
 	node.prev.next = node.next
@@ -60,7 +60,7 @@ func (u *mru) updateUse(bufferIndex uint64) {
 	u.mruListHead.next = node
 }
 
-func (u *mru) removeLeastUsed() uint64{
+func (u *mru) removeLeastUsed() int{
 	luBufferIdx := u.mruListTail.bufferIndex
 	u.removeUse(luBufferIdx)
 	return luBufferIdx
