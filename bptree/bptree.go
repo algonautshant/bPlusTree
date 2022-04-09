@@ -3,7 +3,6 @@ package bptree
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 )
 
 const (
@@ -36,12 +35,11 @@ type bPTreeKeyValuePage struct {
 }
 
 type bPTreeAddressValuePage struct {
-	t                 int // 2t = max number of elements
-	leaf              bool
-	numberOfAddresses uint64
-	addresses         []AddressKey // 2t-1 for non-leaf, 2t for leaf
-	values            []uint64     // 2t
-	pinned            bool
+	t         int // 2t = max number of elements
+	leaf      bool
+	addresses []AddressKey // 2t-1 for non-leaf, 2t for leaf
+	values    []uint64     // 2t
+	pinned    bool
 }
 
 type flatKeyValuePage struct {
@@ -49,6 +47,11 @@ type flatKeyValuePage struct {
 	rounds                  []uint64
 	values                  []uint64
 	pinned                  bool
+}
+
+type RoundBalance struct {
+	Round   uint64
+	Balance uint64
 }
 
 func (kv *bPTreeKeyValuePage) isLeaf() bool {
@@ -82,6 +85,7 @@ func (kv *bPTreeKeyValuePage) unmarshal(b []byte) {
 			binary.BigEndian.Uint64(b[lastIndex:lastIndex+8]))
 		lastIndex = lastIndex + 8
 	}
+	// TODO: XXX this is wrong. number of keys can be different in non-leaf nodes
 	for x := uint64(0); x < kv.numberOfKeys; x++ {
 		kv.values = append(kv.values,
 			binary.BigEndian.Uint64(b[lastIndex:lastIndex+8]))
@@ -179,15 +183,18 @@ func (av *bPTreeAddressValuePage) unmarshal(b []byte) {
 	}
 	lastIndex++
 
-	av.numberOfAddresses = binary.BigEndian.Uint64(b[lastIndex : lastIndex+8])
+	numberOfAddresses := binary.BigEndian.Uint64(b[lastIndex : lastIndex+8])
 	lastIndex += 8
-	av.addresses = make([]AddressKey, av.numberOfAddresses)
-	av.values = make([]uint64, 0, av.numberOfAddresses)
-	for x := uint64(0); x < av.numberOfAddresses; x++ {
+	numberOfValues := binary.BigEndian.Uint64(b[lastIndex : lastIndex+8])
+	lastIndex += 8
+
+	av.addresses = make([]AddressKey, numberOfAddresses)
+	av.values = make([]uint64, 0, numberOfValues)
+	for x := uint64(0); x < numberOfAddresses; x++ {
 		copy(av.addresses[x][:], b[lastIndex:lastIndex+ADDRESS_SIZE])
 		lastIndex = lastIndex + ADDRESS_SIZE
 	}
-	for x := uint64(0); x < av.numberOfAddresses; x++ {
+	for x := uint64(0); x < numberOfValues; x++ {
 		av.values = append(av.values,
 			binary.BigEndian.Uint64(b[lastIndex:lastIndex+8]))
 		lastIndex = lastIndex + 8
@@ -205,8 +212,9 @@ func (av *bPTreeAddressValuePage) storageID() byte {
 // marshal deserializes the page from BPTreeKeyValuePage page
 // byte 0: BPTreeKeyValuePage / BPTreeAddressValuePage
 // byte 1: 0 leaf=false 1 leaf=true
-// byte 2: len (uint64)
-// byte 10: addresses
+// byte 2: len addresses (uint64)
+// byte 10:len keys (uint64)
+// byte 18: addresses
 // byte ...: values
 func (av *bPTreeAddressValuePage) marshal(b []byte) (numWritten int, err error) {
 	offset := 0
@@ -218,19 +226,20 @@ func (av *bPTreeAddressValuePage) marshal(b []byte) (numWritten int, err error) 
 		b[offset] = 0
 	}
 	offset++
-	binary.BigEndian.PutUint64(b[offset:offset+8], av.numberOfAddresses)
+	binary.BigEndian.PutUint64(b[offset:offset+8], uint64(len(av.addresses)))
 	offset += 8
-
+	binary.BigEndian.PutUint64(b[offset:offset+8], uint64(len(av.values)))
+	offset += 8
 	for _, x := range av.addresses {
 		if offset+ADDRESS_SIZE > PAGE_SIZE {
-			return 0, OversizeError{av.numberOfAddresses, "BPTreeAddressValuePage"}
+			return 0, OversizeError{uint64(len(av.addresses)), "BPTreeAddressValuePage"}
 		}
 		copy(b[offset:offset+ADDRESS_SIZE], x[:])
 		offset += ADDRESS_SIZE
 	}
 	for _, x := range av.values {
 		if offset+8 > PAGE_SIZE {
-			return 0, OversizeError{av.numberOfAddresses, "BPTreeAddressValuePage"}
+			return 0, OversizeError{uint64(len(av.values)), "BPTreeAddressValuePage"}
 		}
 		binary.BigEndian.PutUint64(b[offset:offset+8], x)
 		offset += 8
@@ -238,22 +247,28 @@ func (av *bPTreeAddressValuePage) marshal(b []byte) (numWritten int, err error) 
 	return offset, nil
 }
 
-func (av *bPTreeAddressValuePage) searchAddress(bm *bufferManager, address AddressKey) (valuesAt fileOffsetPageIndex, err error) {
+func (av *bPTreeAddressValuePage) searchAddress(bm *bufferManager, address AddressKey) (valuesAt FileOffsetPageIndex, err error) {
 	var i int
 	var a AddressKey
-	for i, a = range av.addresses {
+	for i = 0; i < len(av.addresses); i++ {
+		a = av.addresses[i]
 		if a.compare(&address) < 0 {
 			continue
 		}
 		break
 	}
-	if i < int(av.numberOfAddresses) && a.compare(&address) == 0 {
+	if i < len(av.addresses) && a.compare(&address) == 0 {
 		// found the address
-		return fileOffsetPageIndex(av.values[i]), nil
+		if av.leaf {
+			return FileOffsetPageIndex(av.values[i]), nil
+		}
 	}
 	if av.isLeaf() {
 		// did not find the address
 		return 0, nil
+	}
+	if a.compare(&address) == 0 {
+		i++ // if the key is the same as the account, it will be in the right child
 	}
 	nextPage, err := bm.readPage(fileOffset(av.values[i]))
 	if err != nil {
@@ -269,11 +284,10 @@ func (av *bPTreeAddressValuePage) searchAddress(bm *bufferManager, address Addre
 
 func getEmptyBPTreeAddressValuePage(bm *bufferManager) (fileIndex fileOffset, p *bPTreeAddressValuePage, err error) {
 	np := &bPTreeAddressValuePage{
-		leaf:              true,
-		numberOfAddresses: 0,
-		addresses:         make([]AddressKey, 0, (&bPTreeAddressValuePage{}).maxNumberOfElements()),
-		values:            make([]uint64, 0, (&bPTreeAddressValuePage{}).maxNumberOfElements()),
-		t:                 int((&bPTreeAddressValuePage{}).maxNumberOfElements() / 2),
+		leaf:      true,
+		addresses: make([]AddressKey, 0, (&bPTreeAddressValuePage{}).maxNumberOfElements()),
+		values:    make([]uint64, 0, (&bPTreeAddressValuePage{}).maxNumberOfElements()),
+		t:         int((&bPTreeAddressValuePage{}).maxNumberOfElements() / 2),
 	}
 	fo, err := bm.addNewPage(np)
 	if err != nil {
@@ -282,10 +296,24 @@ func getEmptyBPTreeAddressValuePage(bm *bufferManager) (fileIndex fileOffset, p 
 	return fo, np, nil
 }
 
-func (av *bPTreeAddressValuePage) insertAddressNonFull(bm *bufferManager, address AddressKey, round, value uint64) (addedAt fileOffsetPageIndex, err error) {
+func (av *bPTreeAddressValuePage) insertAddressNonFull(bm *bufferManager, address AddressKey, round, value uint64) (addedAt FileOffsetPageIndex, err error) {
 	i := len(av.addresses) - 1
 	// if is leaf
 	if av.leaf {
+		// first check if the address is already here. If not, insert it
+		existingIndex := 0
+		for ; existingIndex < len(av.addresses) && (&address).compare(&av.addresses[existingIndex]) > 0; existingIndex++ {
+		}
+		if existingIndex < len(av.addresses) && (&address).compare(&av.addresses[existingIndex]) == 0 {
+			// the address is already in the tree. Just update the pointer to the flat page
+			index, err := addFlatKVPageValue(bm, FileOffsetPageIndex(av.values[existingIndex]), round, value)
+			if err != nil {
+				return 0, err
+			}
+			av.values[existingIndex] = uint64(index)
+			return index, nil
+		}
+
 		// will add a value here. increase the size of the addresses
 		av.addresses = append(av.addresses, AddressKey{})
 		for ; i >= 0 && (&address).compare(&av.addresses[i]) < 0; i-- {
@@ -298,7 +326,7 @@ func (av *bPTreeAddressValuePage) insertAddressNonFull(bm *bufferManager, addres
 		}
 		// increase the size of the values
 		av.values = append(av.values, uint64(0))
-		for j := len(av.values) - 1; j > i+1; i-- {
+		for j := len(av.values) - 1; j > i+1; j-- {
 			av.values[j] = av.values[j-1]
 		}
 		av.values[i+1] = uint64(index)
@@ -376,7 +404,7 @@ func (av *bPTreeAddressValuePage) splitChild(bm *bufferManager, i int, yPage *bP
 	return nil
 }
 
-func (av *bPTreeAddressValuePage) insertAddress(bm *bufferManager, address AddressKey, round, value uint64) (addedAt fileOffsetPageIndex, err error) {
+func (av *bPTreeAddressValuePage) insertAddress(bm *bufferManager, address AddressKey, round, value uint64) (addedAt FileOffsetPageIndex, err error) {
 	t := av.t
 	if len(av.addresses) < t*2-1 {
 		// if has space:
@@ -506,7 +534,7 @@ func (fp *flatKeyValuePage) marshal(b []byte) (numWritten int, err error) {
 //        it is calcuated as follows: PAGE_SIZE * fileIndex + rounds/values array index
 // The first value will not have a continued from value. Moving back should not be done,
 //        and it is recognized from the counter which is absent for 1.
-func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, value uint64) (newIndex fileOffsetPageIndex, err error) {
+func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, value uint64) (newIndex FileOffsetPageIndex, err error) {
 	fileIndex := index.getFileOffset()
 	pageIndex := index.getElementIndexInPage()
 
@@ -517,7 +545,7 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 		defer bm.flatKeyValuePageMu.Unlock()
 
 		nextRunSize := uint64(1)
-		nextRunPageFileIndex := bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))]
+		nextRunPageFileIndex := bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)]
 
 		// if the page for this size is not available, allocate a new page
 		if nextRunPageFileIndex == 0 {
@@ -537,9 +565,9 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 			// the new index is where the number of values is stored. It is composed of the page fileIndex and the array index
 			newIndex := getFileOffsetPageIndex(newFileIndex, 0)
 
-			// register this page in flatKVFileEndOffset only if it can hold another of this size
+			// register this page in flatKVLastBucketOffset only if it can hold another of this size
 			if newPage.nextAvailableArrayIndex+nextRunSize <= newPage.maxNumberOfElements() {
-				bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))] = newFileIndex
+				bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = newFileIndex
 			}
 			return newIndex, nil
 		}
@@ -566,11 +594,11 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 		// the new index is where the number of values is stored. It is composed of the page fileIndex and the array index
 		newIndex := getFileOffsetPageIndex(nextRunPageFileIndex, int(arrayIndex))
 
-		// register this page in flatKVFileEndOffset only if it can hold another of this size
+		// register this page in flatKVLastBucketOffset only if it can hold another of this size
 		if newPage.nextAvailableArrayIndex+nextRunSize <= newPage.maxNumberOfElements() {
-			bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))] = nextRunPageFileIndex
+			bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = nextRunPageFileIndex
 		} else { // otherwise clear it
-			bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))] = 0
+			bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = 0
 		}
 		return newIndex, nil
 	}
@@ -588,9 +616,7 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 	}
 
 	// If the next slot is available, use it
-	// If the run size is 1, and there is an avilabe space, then the
-	// run sie is not doubled.
-	if fkvp.rounds[pageIndex+1] == 0 && fkvp.values[pageIndex+1] == 0 {
+	if numberOfValues > 1 && pageIndex+1 < len(fkvp.rounds) && fkvp.rounds[pageIndex+1] == 0 && fkvp.values[pageIndex+1] == 0 {
 		fkvp.rounds[pageIndex] = round
 		fkvp.values[pageIndex] = value
 
@@ -600,17 +626,19 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 		return index.addToElementIndex(1), nil
 	}
 
-	// If next slot is not available, fine a new page
+	// If next slot is not available, find a new page
 	bm.flatKeyValuePageMu.Lock()
 	defer bm.flatKeyValuePageMu.Unlock()
 
 	// next run size for this is numberOfValues*2
-	nextRunSize := numberOfValues
-	if nextRunSize*2 <= fkvp.maxNumberOfElements() {
-		nextRunSize = nextRunSize * 2
+	nextRunSize := numberOfValues + 1
+	maxNumElts := fkvp.maxNumberOfElements()
+	if nextRunSize > maxNumElts {
+		nextRunSize = maxNumElts
 	}
 
-	nextRunPageFileIndex := bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))]
+	bucketIdx := getFlatKVLastBucketOffsetIndex(nextRunSize)
+	nextRunPageFileIndex := bm.sm.header.flatKVLastBucketOffset[bucketIdx]
 
 	// if the page for this size is not available, allocate a new page
 	if nextRunPageFileIndex == 0 {
@@ -629,7 +657,7 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 		newPage.values[2] = numberOfValues + 1
 
 		// allocate nextRunSize slots here
-		newPage.nextAvailableArrayIndex = nextRunSize
+		newPage.nextAvailableArrayIndex = nextRunSize + 2 // +2 : one for continued at, one for the size
 
 		newFileIndex, err := bm.addNewPage(newPage)
 		if err != nil {
@@ -638,9 +666,9 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 		// the new index is where the number of values is stored. It is composed of the page fileIndex and the array index
 		newIndex := getFileOffsetPageIndex(newFileIndex, 2)
 
-		// register this page in flatKVFileEndOffset only if it can hold another of this size
+		// register this page in flatKVLastBucketOffset only if it can hold another of this size
 		if newPage.nextAvailableArrayIndex+nextRunSize <= fkvp.maxNumberOfElements() {
-			bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))] = newFileIndex
+			bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = newFileIndex
 		}
 		return newIndex, nil
 	}
@@ -669,16 +697,16 @@ func addFlatKVPageValue(bm *bufferManager, index fileOffsetPageIndex, round, val
 	newPage.values[arrayIndex+2] = numberOfValues + 1
 
 	// allocate nextRunSize slots here
-	newPage.nextAvailableArrayIndex = newPage.nextAvailableArrayIndex + nextRunSize
+	newPage.nextAvailableArrayIndex = newPage.nextAvailableArrayIndex + nextRunSize + 2
 
 	// the new index is where the number of values is stored. It is composed of the page fileIndex and the array index
 	newIndex = getFileOffsetPageIndex(nextRunPageFileIndex, int(arrayIndex+2))
 
-	// register this page in flatKVFileEndOffset only if it can hold another of this size
+	// register this page in flatKVLastBucketOffset only if it can hold another of this size
 	if newPage.nextAvailableArrayIndex+nextRunSize <= fkvp.maxNumberOfElements() {
-		bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))] = nextRunPageFileIndex
+		bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = nextRunPageFileIndex
 	} else { // otherwise clear it
-		bm.sm.header.flatKVFileEndOffset[int(math.Log2(float64(nextRunSize)))] = 0
+		bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = 0
 	}
 	return newIndex, nil
 
@@ -691,4 +719,63 @@ func makeFlatKeyValuePage() *flatKeyValuePage {
 	fkvp.rounds = make([]uint64, fkvp.maxNumberOfElements())
 	fkvp.values = make([]uint64, fkvp.maxNumberOfElements())
 	return fkvp
+}
+
+func getRoundBalances(bm *bufferManager, offset FileOffsetPageIndex) (result []RoundBalance, moreHandle FileOffsetPageIndex, err error) {
+	p, err := bm.readPage(offset.getFileOffset())
+	if err != nil {
+		return nil, 0, err
+	}
+	page, ok := p.(*flatKeyValuePage)
+	if !ok {
+		return nil, 0, fmt.Errorf("getRoundBalance expected flatKeyValuePage got something else")
+	}
+
+	pageOffset := offset.getElementIndexInPage()
+	if page.rounds[pageOffset] != 0 {
+		result := make([]RoundBalance, 1, 1)
+		// there is only a single value
+		result[0] = RoundBalance{Round: page.rounds[pageOffset], Balance: page.values[pageOffset]}
+		return result, 0, nil
+	}
+
+	result = make([]RoundBalance, 0, page.values[pageOffset])
+	result, err = getRoundBalancesRecursive(bm, offset, result)
+	if err != nil {
+		return nil, 0, nil
+	}
+	return result, 0, nil
+}
+
+func getRoundBalancesRecursive(bm *bufferManager, offset FileOffsetPageIndex, result []RoundBalance) (retResult []RoundBalance, err error) {
+	p, err := bm.readPage(offset.getFileOffset())
+	if err != nil {
+		return nil, err
+	}
+	page, ok := p.(*flatKeyValuePage)
+	if !ok {
+		return nil, fmt.Errorf("getRoundBalance expected flatKeyValuePage got something else")
+	}
+
+	pageOffset := offset.getElementIndexInPage()
+	if page.rounds[pageOffset] != 0 {
+		// there is only a single value
+		result = append(result, RoundBalance{Round: page.rounds[pageOffset], Balance: page.values[pageOffset]})
+		return result, nil
+	}
+
+	for pageOffset = pageOffset - 1; page.rounds[pageOffset] != 0; pageOffset-- {
+		result = append(result, RoundBalance{Round: page.rounds[pageOffset], Balance: page.values[pageOffset]})
+	}
+	return getRoundBalancesRecursive(bm, FileOffsetPageIndex(page.values[pageOffset]), result)
+}
+
+func getFlatKVLastBucketOffsetIndex(forSize uint64) int {
+	x := 0
+	for forSize > 0 {
+		forSize = forSize >> 1
+		x++
+	}
+	x--
+	return x
 }

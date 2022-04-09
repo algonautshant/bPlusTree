@@ -3,14 +3,14 @@ package bptree
 import (
 	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 )
 
 const (
-	PAGE_SIZE   = 4096
-	HEADER_SIZE = 128 // 32 + 8*log2(PAGE_SIZE)
+	PAGE_SIZE   = 16384//4096
+	FLATKVLASTBUCKETOFFSET_SIZE = 14//ceil(log2(PAGE_SIZE))
+	HEADER_SIZE = 32 + 8 * FLATKVLASTBUCKETOFFSET_SIZE // 32 + 8*FLATKVLASTBUCKETOFFSET_SIZE
 )
 
 // FileOffset is where the page is written in the file
@@ -20,24 +20,24 @@ type fileOffset uint64
 // FileOffsetPageIndex combines the page location in the file
 // and an offset inside the page. The offset inside the page
 // corresponds to the element array index and not actual byte index.
-type fileOffsetPageIndex uint64
+type FileOffsetPageIndex uint64
 
 // GetElementIndexInPage returns the element array index inside the page
-func (fopi fileOffsetPageIndex) getElementIndexInPage() int {
+func (fopi FileOffsetPageIndex) getElementIndexInPage() int {
 	return int((uint64(fopi) - HEADER_SIZE) % PAGE_SIZE)
 }
 
 // GetFileOffset returns the offset of the page inside the file
-func (fopi fileOffsetPageIndex) getFileOffset() fileOffset {
+func (fopi FileOffsetPageIndex) getFileOffset() fileOffset {
 	return fileOffset(uint64(fopi) - uint64(fopi.getElementIndexInPage()))
 }
 
-func getFileOffsetPageIndex(fileOffset fileOffset, elementIndex int) fileOffsetPageIndex {
-	return fileOffsetPageIndex(uint64(fileOffset) + uint64(elementIndex))
+func getFileOffsetPageIndex(fileOffset fileOffset, elementIndex int) FileOffsetPageIndex {
+	return FileOffsetPageIndex(uint64(fileOffset) + uint64(elementIndex))
 }
 
-func (fopi fileOffsetPageIndex) addToElementIndex(a int) fileOffsetPageIndex {
-	return fileOffsetPageIndex(uint64(fopi) + uint64(a))
+func (fopi FileOffsetPageIndex) addToElementIndex(a int) FileOffsetPageIndex {
+	return FileOffsetPageIndex(uint64(fopi) + uint64(a))
 }
 
 type storageManager struct {
@@ -54,7 +54,7 @@ type header struct {
 
 	accountsHeadOffset fileOffset
 
-	flatKVFileEndOffset []fileOffset
+	flatKVLastBucketOffset []fileOffset
 }
 
 func (sm *storageManager) writeHeader() error {
@@ -69,17 +69,17 @@ func (sm *storageManager) writeHeader() error {
 	binary.BigEndian.PutUint64(hBuff[offset:offset+8], uint64(sm.header.accountsHeadOffset))
 	offset += 8
 
-	for _, x := range sm.header.flatKVFileEndOffset {
+	for _, x := range sm.header.flatKVLastBucketOffset {
 		binary.BigEndian.PutUint64(hBuff[offset:offset+8], uint64(x))
 		offset += 8
 	}
 
 	n, err := sm.fd.WriteAt(hBuff[:], 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("storageManager writeHeader: WriteAt error at 0: %w", err)
 	}
 	if n != HEADER_SIZE {
-		return fmt.Errorf("failed to write the header")
+		return fmt.Errorf("storageManager writeHeader: wrote %d instead of %d", n, HEADER_SIZE)
 	}
 	return nil
 }
@@ -88,10 +88,10 @@ func (sm *storageManager) readHeader() error {
 	var hBuff [HEADER_SIZE]byte
 	n, err := sm.fd.ReadAt(hBuff[:], 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("storageManager readHeader: ReadAt 0 error: %w", err)
 	}
 	if n != HEADER_SIZE {
-		return fmt.Errorf("failed to read the header")
+		return fmt.Errorf("storageManager readHeader: should read %d read %d", HEADER_SIZE, n)
 	}
 
 	offset := 0
@@ -104,8 +104,8 @@ func (sm *storageManager) readHeader() error {
 	sm.header.accountsHeadOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
 	offset += 8
 
-	for x := 0; x < 11; x++ {
-		sm.header.flatKVFileEndOffset = append(sm.header.flatKVFileEndOffset,
+	for x := 0; x < FLATKVLASTBUCKETOFFSET_SIZE; x++ {
+		sm.header.flatKVLastBucketOffset = append(sm.header.flatKVLastBucketOffset,
 			fileOffset(binary.BigEndian.Uint64(hBuff[offset:offset+8])))
 		offset += 8
 	}
@@ -115,7 +115,7 @@ func (sm *storageManager) readHeader() error {
 func openStorageManager(filename string) (sm *storageManager, err error) {
 	f, err := os.OpenFile(filename, os.O_RDWR, 0755)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("storagem openStorageManager: OpenFile %s error: %w", filename, err)
 	}
 	sm = &storageManager{fd: f}
 	err = sm.readHeader()
@@ -128,7 +128,7 @@ func openStorageManager(filename string) (sm *storageManager, err error) {
 func initStorageManager(filename string) (sm *storageManager, err error) {
 	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("storagem initStorageManager: OpenFile %s error: %w", filename, err)
 	}
 	sm = &storageManager{fd: f}
 	sm.header = header{
@@ -136,7 +136,7 @@ func initStorageManager(filename string) (sm *storageManager, err error) {
 		numberOfPages:       0,
 		newPageOffset:       HEADER_SIZE,
 		firstPageOffset:     HEADER_SIZE,
-		flatKVFileEndOffset: make([]fileOffset, int(math.Log2(float64((&flatKeyValuePage{}).maxNumberOfElements())))),
+		flatKVLastBucketOffset: make([]fileOffset, FLATKVLASTBUCKETOFFSET_SIZE, FLATKVLASTBUCKETOFFSET_SIZE),
 	}
 	err = sm.writeHeader()
 	if err != nil {
@@ -164,7 +164,7 @@ func (sm *storageManager) writeFirstPage(page page) error {
 		return err
 	}
 	if np != sm.header.firstPageOffset {
-		return fmt.Errorf("the first page should have offset %d but got %d", HEADER_SIZE, np)
+		return fmt.Errorf("storageManager writeFirstPage: the first page should have offset %d but got %d", HEADER_SIZE, np)
 	}
 	return nil
 }
@@ -180,10 +180,10 @@ func (sm *storageManager) writePage(page page, fileOffset fileOffset) error {
 	defer sm.mu.Unlock()
 	n, err := sm.fd.WriteAt(buffer[:bytes], int64(fileOffset))
 	if err != nil {
-		return err
+		return fmt.Errorf("storageManager writePage: WriteAt %d error: %w", fileOffset, err)
 	}
 	if n != bytes {
-		return fmt.Errorf("failed writing page at %d: wrote %d / %d",
+		return fmt.Errorf("storageManager writePage: failed to write page at %d: wrote %d / %d",
 			fileOffset, n, bytes)
 	}
 	return nil
@@ -200,7 +200,7 @@ func (sm *storageManager) readPage(fileOffset fileOffset) (page page, err error)
 	defer sm.mu.Unlock()
 	_, err = sm.fd.ReadAt(buffer[:], int64(fileOffset))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("storageManager readPage: ReadAt %d error: %w", fileOffset, err)
 	}
 	return unmarshal(buffer[:])
 }

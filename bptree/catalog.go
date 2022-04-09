@@ -34,7 +34,6 @@ func initializeCatalog(filename string, createNew bool) (cat *catalog, err error
 	if createNew && errors.Is(err, os.ErrNotExist) {
 		sm, err = initStorageManager(filename)		
 	}
-	
 	if err != nil {
 		return nil, err
 	}

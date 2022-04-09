@@ -1,6 +1,7 @@
 package bptree
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -85,7 +86,7 @@ func (bm *bufferManager) evictPage(forcePinned bool) (freePoolIdx int, err error
 	if bm.dirty[pageToEvict] {
 		err := bm.sm.writePage(bm.pool[pageToEvict], bm.bufferIndexToFileOffset[pageToEvict])
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("evictPage: writePage error: %v", err)
 		}
 		bm.dirty[pageToEvict] = false
 	}
