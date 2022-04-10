@@ -488,7 +488,7 @@ func (fp *flatKeyValuePage) unmarshal(b []byte) {
 	lastIndex := 0
 	fp.nextAvailableArrayIndex = binary.BigEndian.Uint64(b[lastIndex : lastIndex+8])
 	lastIndex += 8
-	numberOfElements := uint64((lastIndex - (PAGE_SIZE - 9)) / 16)
+	numberOfElements := fp.maxNumberOfElements()
 	fp.rounds = make([]uint64, numberOfElements)
 	fp.values = make([]uint64, numberOfElements)
 	for x := uint64(0); x < numberOfElements; x++ {
@@ -633,7 +633,7 @@ func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, val
 	// next run size for this is numberOfValues*2
 	nextRunSize := numberOfValues + 1
 	maxNumElts := fkvp.maxNumberOfElements()
-	if nextRunSize > maxNumElts {
+	if nextRunSize + 2 > maxNumElts { // +2 : one for continued at, one for the size
 		nextRunSize = maxNumElts
 	}
 

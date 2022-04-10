@@ -33,7 +33,10 @@ func getBufferManager(sm *storageManager) *bufferManager {
 // readPage reads a page if not in the pool, and returns the pool index
 func (bm *bufferManager) readPage(fileIndex fileOffset) (page, error) {
 	if i, found := bm.fileOffsetToBufferIndex[fileIndex]; found {
-		bm.mru.updateUse(i)
+		err := bm.mru.updateUse(i)
+		if err != nil {
+			return nil, err
+		}
 		return bm.pool[i], nil
 	}
 	page, err := bm.sm.readPage(fileIndex)
@@ -67,7 +70,7 @@ func (bm *bufferManager) addNewPage(page page) (fileIndex fileOffset, err error)
 		bm.mru.addUse(freePoolIdx)
 		bm.fileOffsetToBufferIndex[fileIndex] = freePoolIdx
 		bm.bufferIndexToFileOffset[freePoolIdx] = fileIndex
-		return 0, nil
+		return fileIndex, nil
 	}
 }
 

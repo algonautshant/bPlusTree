@@ -1,5 +1,9 @@
 package bptree
 
+import (
+	"fmt"
+)
+
 type mru struct {
 	mruListHead           *llist
 	mruListTail           *llist
@@ -39,16 +43,23 @@ func (u *mru) addUse(bufferIndex int) {
 	u.mruListHead.next = node
 }
 
-func (u *mru) removeUse(bufferIndex int) {
-	node := u.bufferIndexToListNode[bufferIndex]
+func (u *mru) removeUse(bufferIndex int) error{
+	node, ok := u.bufferIndexToListNode[bufferIndex]
+	if !ok {
+		return fmt.Errorf("mru removeUse: buffer index %d not here", bufferIndex)
+	}
 	// remove the node
 	node.prev.next = node.next
 	node.next.prev = node.prev
 	delete(u.bufferIndexToListNode, bufferIndex)
+	return nil
 }
 
-func (u *mru) updateUse(bufferIndex int) {
-	node := u.bufferIndexToListNode[bufferIndex]
+func (u *mru) updateUse(bufferIndex int) error {
+	node, ok := u.bufferIndexToListNode[bufferIndex]
+	if !ok {
+		return fmt.Errorf("mru updateUse: buffer index %d not here", bufferIndex)
+	}
 	// remove the node
 	node.prev.next = node.next
 	node.next.prev = node.prev
@@ -58,10 +69,11 @@ func (u *mru) updateUse(bufferIndex int) {
 	node.next = u.mruListHead.next
 	u.mruListHead.next.prev = node
 	u.mruListHead.next = node
+	return nil
 }
 
 func (u *mru) removeLeastUsed() int{
-	luBufferIdx := u.mruListTail.bufferIndex
+	luBufferIdx := u.mruListTail.prev.bufferIndex
 	u.removeUse(luBufferIdx)
 	return luBufferIdx
 }

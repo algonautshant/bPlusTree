@@ -8,7 +8,7 @@ import (
 
 const (
 	NUMBER_OF_KEYS_PER_PAGE     = 126
-	NUMBER_OF_BUFFER_POOL_PAGES = 400000
+	NUMBER_OF_BUFFER_POOL_PAGES = 4
 )
 
 type OversizeError struct {

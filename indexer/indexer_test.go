@@ -1,7 +1,6 @@
 package indexer
 
 import (
-	//	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"

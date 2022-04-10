@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	PAGE_SIZE   = 16384//4096
-	FLATKVLASTBUCKETOFFSET_SIZE = 14//ceil(log2(PAGE_SIZE))
-	HEADER_SIZE = 32 + 8 * FLATKVLASTBUCKETOFFSET_SIZE // 32 + 8*FLATKVLASTBUCKETOFFSET_SIZE
+	PAGE_SIZE                   = 128                                //16384//4096
+	FLATKVLASTBUCKETOFFSET_SIZE = 14                                 //ceil(log2(PAGE_SIZE))
+	HEADER_SIZE                 = 32 + 8*FLATKVLASTBUCKETOFFSET_SIZE // 32 + 8*FLATKVLASTBUCKETOFFSET_SIZE
 )
 
 // FileOffset is where the page is written in the file
@@ -132,10 +132,10 @@ func initStorageManager(filename string) (sm *storageManager, err error) {
 	}
 	sm = &storageManager{fd: f}
 	sm.header = header{
-		pageSize:            PAGE_SIZE,
-		numberOfPages:       0,
-		newPageOffset:       HEADER_SIZE,
-		firstPageOffset:     HEADER_SIZE,
+		pageSize:               PAGE_SIZE,
+		numberOfPages:          0,
+		newPageOffset:          HEADER_SIZE,
+		firstPageOffset:        HEADER_SIZE,
 		flatKVLastBucketOffset: make([]fileOffset, FLATKVLASTBUCKETOFFSET_SIZE, FLATKVLASTBUCKETOFFSET_SIZE),
 	}
 	err = sm.writeHeader()
@@ -194,13 +194,16 @@ func (sm *storageManager) readFirstPage() (page page, err error) {
 }
 
 func (sm *storageManager) readPage(fileOffset fileOffset) (page page, err error) {
-	var buffer [PAGE_SIZE]byte
+	buffer := make([]byte, PAGE_SIZE, PAGE_SIZE)
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	_, err = sm.fd.ReadAt(buffer[:], int64(fileOffset))
+	n, err := sm.fd.ReadAt(buffer[:], int64(fileOffset))
+	buffer = buffer[:n]
 	if err != nil {
-		return nil, fmt.Errorf("storageManager readPage: ReadAt %d error: %w", fileOffset, err)
+		if err.Error() != "EOF" {
+			return nil, fmt.Errorf("storageManager readPage: ReadAt %d error: %w", fileOffset, err)
+		}
 	}
 	return unmarshal(buffer[:])
 }
