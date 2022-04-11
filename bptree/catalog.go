@@ -28,18 +28,18 @@ type catalog struct {
 
 // initializeCatalog initializes a new storage. It writes the first page
 // with page 0 at index 0 in the file.
-func initializeCatalog(filename string, createNew bool) (cat *catalog, err error) {
+func initializeCatalog(filename string, createNew bool, pageSize uint64, numberOfBufferpoolPages int) (cat *catalog, err error) {
 	
 	sm, err := openStorageManager(filename)
 	if createNew && errors.Is(err, os.ErrNotExist) {
-		sm, err = initStorageManager(filename)		
+		sm, err = initStorageManager(filename, pageSize)		
 	}
 	if err != nil {
 		return nil, err
 	}
 	catPage0 := initCatalogPages()
 	sm.writeFirstPage(catPage0)
-	bm := getBufferManager(sm)
+	bm := getBufferManager(sm, numberOfBufferpoolPages)
 
 	fileIndex, headAccountPage, err  := getEmptyBPTreeAddressValuePage(bm)
 	if err != nil {

@@ -6,11 +6,12 @@ import (
 )
 
 type bufferManager struct {
-	pool                   []page
-	dirty                  []bool
+	pool                    []page
+	dirty                   []bool
+	numberOfBufferpoolPages int
 	bufferIndexToFileOffset map[int]fileOffset
 	fileOffsetToBufferIndex map[fileOffset]int
-	mru                    mru
+	mru                     mru
 
 	sm *storageManager
 	mu sync.Mutex
@@ -18,14 +19,15 @@ type bufferManager struct {
 	flatKeyValuePageMu sync.Mutex
 }
 
-func getBufferManager(sm *storageManager) *bufferManager {
+func getBufferManager(sm *storageManager, numberOfBufferpoolPages int) *bufferManager {
 	bm := &bufferManager{
-		pool:                   make([]page, 0, NUMBER_OF_BUFFER_POOL_PAGES),
-		dirty:                  make([]bool, NUMBER_OF_BUFFER_POOL_PAGES),
-		fileOffsetToBufferIndex: make(map[fileOffset]int, NUMBER_OF_BUFFER_POOL_PAGES),
-		bufferIndexToFileOffset: make(map[int]fileOffset, NUMBER_OF_BUFFER_POOL_PAGES),
-		sm:                     sm,
-		mru:                    getMru(),
+		pool:                    make([]page, 0, numberOfBufferpoolPages),
+		dirty:                   make([]bool, numberOfBufferpoolPages),
+		numberOfBufferpoolPages: numberOfBufferpoolPages,
+		fileOffsetToBufferIndex: make(map[fileOffset]int, numberOfBufferpoolPages),
+		bufferIndexToFileOffset: make(map[int]fileOffset, numberOfBufferpoolPages),
+		sm:                      sm,
+		mru:                     getMru(),
 	}
 	return bm
 }
@@ -53,7 +55,7 @@ func (bm *bufferManager) addNewPage(page page) (fileIndex fileOffset, err error)
 	}
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
-	if len(bm.pool) < NUMBER_OF_BUFFER_POOL_PAGES {
+	if len(bm.pool) < bm.numberOfBufferpoolPages {
 		bm.pool = append(bm.pool, page)
 		bm.dirty[len(bm.pool)-1] = true
 		bm.mru.addUse(len(bm.pool) - 1)
@@ -79,7 +81,7 @@ func (bm *bufferManager) evictPage(forcePinned bool) (freePoolIdx int, err error
 	pageToEvict := 0
 	for {
 		// todo : take care of the case where all the pages are pinned
-		pageToEvict = bm.mru.removeLeastUsed() // todo: take care of error/undo mru
+		pageToEvict, err = bm.mru.removeLeastUsed() // todo: take care of error/undo mru
 		if !forcePinned && bm.pool[pageToEvict].isPinned() {
 			bm.mru.addUse(pageToEvict)
 			continue

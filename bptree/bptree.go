@@ -6,13 +6,10 @@ import (
 )
 
 const (
-	ADDRESS_SIZE                       = 32
-	BPTREEKEYVALUEPAGE_STORAGE_ID      = 0
+	ADDRESS_SIZE                       = 32 // algorand address size
+	BPTREEKEYVALUEPAGE_STORAGE_ID      = 0 
 	BPTREEKEYVALUEINDEXPAGE_STORAGE_ID = 1
 	FLATKEYVALUEPAGE_STORAGE_ID        = 2
-
-	FLATKEYVALUEPAGE_HEADER_SIZE  = 9
-	FLATKEYVALUEPAGE_ELEMENT_SIZE = 16
 )
 
 type AddressKey [ADDRESS_SIZE]byte
@@ -20,8 +17,8 @@ type AddressKey [ADDRESS_SIZE]byte
 type page interface {
 	isLeaf() bool
 	isPinned() bool
-	unmarshal(b []byte)
-	marshal(b []byte) (numWritten int, err error)
+	unmarshal(b []byte, pageSize int)
+	marshal(b []byte, pageSize int) (numWritten int, err error)
 	storageID() byte
 	maxNumberOfElements() uint64
 }
@@ -41,6 +38,8 @@ type bPTreeAddressValuePage struct {
 	values    []uint64     // 2t
 	pinned    bool
 }
+const BPTREEADDRESSVALUEPAGE_HEADER_SIZE = 18
+const BPTREEADDRESSVALUEPAGE_ELEMENT_SIZE = ADDRESS_SIZE + 8
 
 type flatKeyValuePage struct {
 	nextAvailableArrayIndex uint64 // this is the rounds/values arrray index
@@ -48,6 +47,8 @@ type flatKeyValuePage struct {
 	values                  []uint64
 	pinned                  bool
 }
+const FLATKEYVALUEPAGE_ELEMENT_SIZE = 16 // 1 round 1 value
+const FLATKEYVALUEPAGE_HEADER_SIZE  = 9 // flatKeyType (byte) nextAvailableArrayIndex (uint64)
 
 type RoundBalance struct {
 	Round   uint64
@@ -62,13 +63,14 @@ func (kv *bPTreeKeyValuePage) isPinned() bool {
 	return kv.pinned
 }
 
+var bPTreeKeyValuePage_maxNumberOfElements uint64
 // unmarshal deserializes the page into BPTreeKeyValuePage page
 // byte 0: BPTreeKeyValuePage / BPTreeAddressValuePage
 // byte 1: 0 leaf=false 1 leaf=true
 // byte 2: len (uint64)
 // byte 10: keys
 // byte ...: values
-func (kv *bPTreeKeyValuePage) unmarshal(b []byte) {
+func (kv *bPTreeKeyValuePage) unmarshal(b []byte, pageSize int) {
 	lastIndex := 0
 	if b[lastIndex] == 0 {
 		kv.leaf = false
@@ -90,11 +92,12 @@ func (kv *bPTreeKeyValuePage) unmarshal(b []byte) {
 		kv.values = append(kv.values,
 			binary.BigEndian.Uint64(b[lastIndex:lastIndex+8]))
 		lastIndex = lastIndex + 8
-	}
+	}	
 }
 
+
 func (kv *bPTreeKeyValuePage) maxNumberOfElements() uint64 {
-	return (PAGE_SIZE - 10) / 2 / 8
+	return bPTreeKeyValuePage_maxNumberOfElements
 }
 
 func (kv *bPTreeKeyValuePage) storageID() byte {
@@ -107,7 +110,7 @@ func (kv *bPTreeKeyValuePage) storageID() byte {
 // byte 2: len (uint64)
 // byte ...: keys
 // byte ...: values
-func (kv *bPTreeKeyValuePage) marshal(b []byte) (numWritten int, err error) {
+func (kv *bPTreeKeyValuePage) marshal(b []byte, pageSize int) (numWritten int, err error) {
 	offset := 0
 	b[offset] = kv.storageID()
 	offset++
@@ -121,43 +124,20 @@ func (kv *bPTreeKeyValuePage) marshal(b []byte) (numWritten int, err error) {
 	offset += 8
 
 	for _, x := range kv.keys {
-		if offset+8 > PAGE_SIZE {
+		if offset+8 > pageSize {
 			return 0, OversizeError{kv.numberOfKeys, "BPTreeKeyValuePage"}
 		}
 		binary.BigEndian.PutUint64(b[offset:offset+8], x)
 		offset += 8
 	}
 	for _, x := range kv.values {
-		if offset+8 > PAGE_SIZE {
+		if offset+8 > pageSize {
 			return 0, OversizeError{kv.numberOfKeys, "BPTreeKeyValuePage"}
 		}
 		binary.BigEndian.PutUint64(b[offset:offset+8], x)
 		offset += 8
 	}
 	return offset, nil
-}
-
-func (kv *bPTreeKeyValuePage) SearchKey(bm *bufferManager, key uint64) (value uint64, err error) {
-	var i int
-	var k uint64
-	for i, k = range kv.keys {
-		if k < key {
-			continue
-		}
-		break
-	}
-	if i < len(kv.keys) && k == key {
-		return kv.keys[i], nil
-	}
-	if kv.isLeaf() {
-		return
-	}
-	nextPage, err := bm.readPage(fileOffset(kv.keys[i]))
-	if err != nil {
-		return 0, err
-	}
-	kvNP := nextPage.(*bPTreeKeyValuePage)
-	return kvNP.SearchKey(bm, key)
 }
 
 func (av *bPTreeAddressValuePage) isLeaf() bool {
@@ -174,7 +154,7 @@ func (av *bPTreeAddressValuePage) isPinned() bool {
 // byte 2: len (uint64)
 // byte 10: addresses
 // byte ...: values
-func (av *bPTreeAddressValuePage) unmarshal(b []byte) {
+func (av *bPTreeAddressValuePage) unmarshal(b []byte, pageSize int) {
 	lastIndex := 0
 	if b[lastIndex] == 0 {
 		av.leaf = false
@@ -201,8 +181,9 @@ func (av *bPTreeAddressValuePage) unmarshal(b []byte) {
 	}
 }
 
+var bPTreeAddressValuePage_maxNumberOfElements uint64
 func (av *bPTreeAddressValuePage) maxNumberOfElements() uint64 {
-	return (PAGE_SIZE - 10) / (ADDRESS_SIZE + 8)
+	return bPTreeAddressValuePage_maxNumberOfElements
 }
 
 func (av *bPTreeAddressValuePage) storageID() byte {
@@ -216,7 +197,7 @@ func (av *bPTreeAddressValuePage) storageID() byte {
 // byte 10:len keys (uint64)
 // byte 18: addresses
 // byte ...: values
-func (av *bPTreeAddressValuePage) marshal(b []byte) (numWritten int, err error) {
+func (av *bPTreeAddressValuePage) marshal(b []byte, pageSize int) (numWritten int, err error) {
 	offset := 0
 	b[offset] = av.storageID()
 	offset++
@@ -231,14 +212,14 @@ func (av *bPTreeAddressValuePage) marshal(b []byte) (numWritten int, err error) 
 	binary.BigEndian.PutUint64(b[offset:offset+8], uint64(len(av.values)))
 	offset += 8
 	for _, x := range av.addresses {
-		if offset+ADDRESS_SIZE > PAGE_SIZE {
+		if offset+ADDRESS_SIZE > pageSize {
 			return 0, OversizeError{uint64(len(av.addresses)), "BPTreeAddressValuePage"}
 		}
 		copy(b[offset:offset+ADDRESS_SIZE], x[:])
 		offset += ADDRESS_SIZE
 	}
 	for _, x := range av.values {
-		if offset+8 > PAGE_SIZE {
+		if offset+8 > pageSize {
 			return 0, OversizeError{uint64(len(av.values)), "BPTreeAddressValuePage"}
 		}
 		binary.BigEndian.PutUint64(b[offset:offset+8], x)
@@ -434,20 +415,20 @@ func (av *bPTreeAddressValuePage) insertAddress(bm *bufferManager, address Addre
 	return
 }
 
-func unmarshal(b []byte) (page page, err error) {
+func unmarshal(b []byte, pageSize int) (page page, err error) {
 	if b[0] == BPTREEKEYVALUEPAGE_STORAGE_ID {
 		kv := &bPTreeKeyValuePage{}
-		kv.unmarshal(b[1:])
+		kv.unmarshal(b[1:], pageSize)
 		return kv, nil
 	}
 	if b[0] == BPTREEKEYVALUEINDEXPAGE_STORAGE_ID {
 		av := &bPTreeAddressValuePage{}
-		av.unmarshal(b[1:])
+		av.unmarshal(b[1:], pageSize)
 		return av, nil
 	}
 	if b[0] == FLATKEYVALUEPAGE_STORAGE_ID {
 		fkv := &flatKeyValuePage{}
-		fkv.unmarshal(b[1:])
+		fkv.unmarshal(b[1:], pageSize)
 		return fkv, nil
 	}
 	return nil, fmt.Errorf("Unknown page type: %d", b[0])
@@ -472,8 +453,9 @@ func (fp *flatKeyValuePage) isPinned() bool {
 	return fp.pinned
 }
 
+var flatKeyValuePage_maxNumberOfElements uint64
 func (fp *flatKeyValuePage) maxNumberOfElements() uint64 {
-	return (PAGE_SIZE - FLATKEYVALUEPAGE_HEADER_SIZE) / FLATKEYVALUEPAGE_ELEMENT_SIZE
+	return flatKeyValuePage_maxNumberOfElements
 }
 
 func (fp *flatKeyValuePage) storageID() byte {
@@ -484,7 +466,7 @@ func (fp *flatKeyValuePage) storageID() byte {
 // byte 0: BPTreeKeyValuePage / BPTreeAddressValuePage
 // byte 1: lastIndex
 // ... interleaved round-value round-value...
-func (fp *flatKeyValuePage) unmarshal(b []byte) {
+func (fp *flatKeyValuePage) unmarshal(b []byte, pageSize int) {
 	lastIndex := 0
 	fp.nextAvailableArrayIndex = binary.BigEndian.Uint64(b[lastIndex : lastIndex+8])
 	lastIndex += 8
@@ -503,19 +485,19 @@ func (fp *flatKeyValuePage) unmarshal(b []byte) {
 // byte 0: BPTreeKeyValuePage / BPTreeAddressValuePage
 // byte 1: lastIndex
 // ... interleaved round-value round-value...
-func (fp *flatKeyValuePage) marshal(b []byte) (numWritten int, err error) {
+func (fp *flatKeyValuePage) marshal(b []byte, pageSize int) (numWritten int, err error) {
 	offset := 0
 	b[offset] = fp.storageID()
 	offset++
 	binary.BigEndian.PutUint64(b[offset:offset+8], fp.nextAvailableArrayIndex)
 	offset += 8
 	for i, x := range fp.rounds {
-		if offset+8 > PAGE_SIZE {
+		if offset+8 > pageSize {
 			return 0, OversizeError{uint64(i), "FlatKeyValuePage"}
 		}
 		binary.BigEndian.PutUint64(b[offset:offset+8], x)
 		offset += 8
-		if offset+8 > PAGE_SIZE {
+		if offset+8 > pageSize {
 			return 0, OversizeError{uint64(i), "FlatKeyValuePage"}
 		}
 		binary.BigEndian.PutUint64(b[offset:offset+8], fp.values[i])
@@ -535,8 +517,8 @@ func (fp *flatKeyValuePage) marshal(b []byte) (numWritten int, err error) {
 // The first value will not have a continued from value. Moving back should not be done,
 //        and it is recognized from the counter which is absent for 1.
 func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, value uint64) (newIndex FileOffsetPageIndex, err error) {
-	fileIndex := index.getFileOffset()
-	pageIndex := index.getElementIndexInPage()
+	fileIndex := index.getFileOffset(bm.sm.header.headerSize, bm.sm.header.pageSize)
+	pageIndex := index.getElementIndexInPage(bm.sm.header.headerSize, bm.sm.header.pageSize)
 
 	// if this is the first element of this run
 	if index == 0 {
@@ -722,7 +704,7 @@ func makeFlatKeyValuePage() *flatKeyValuePage {
 }
 
 func getRoundBalances(bm *bufferManager, offset FileOffsetPageIndex) (result []RoundBalance, moreHandle FileOffsetPageIndex, err error) {
-	p, err := bm.readPage(offset.getFileOffset())
+	p, err := bm.readPage(offset.getFileOffset(bm.sm.header.headerSize, bm.sm.header.pageSize))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -731,7 +713,7 @@ func getRoundBalances(bm *bufferManager, offset FileOffsetPageIndex) (result []R
 		return nil, 0, fmt.Errorf("getRoundBalance expected flatKeyValuePage got something else")
 	}
 
-	pageOffset := offset.getElementIndexInPage()
+	pageOffset := offset.getElementIndexInPage(bm.sm.header.headerSize, bm.sm.header.pageSize)
 	if page.rounds[pageOffset] != 0 {
 		result := make([]RoundBalance, 1, 1)
 		// there is only a single value
@@ -748,7 +730,7 @@ func getRoundBalances(bm *bufferManager, offset FileOffsetPageIndex) (result []R
 }
 
 func getRoundBalancesRecursive(bm *bufferManager, offset FileOffsetPageIndex, result []RoundBalance) (retResult []RoundBalance, err error) {
-	p, err := bm.readPage(offset.getFileOffset())
+	p, err := bm.readPage(offset.getFileOffset(bm.sm.header.headerSize, bm.sm.header.pageSize))
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +739,7 @@ func getRoundBalancesRecursive(bm *bufferManager, offset FileOffsetPageIndex, re
 		return nil, fmt.Errorf("getRoundBalance expected flatKeyValuePage got something else")
 	}
 
-	pageOffset := offset.getElementIndexInPage()
+	pageOffset := offset.getElementIndexInPage(bm.sm.header.headerSize, bm.sm.header.pageSize)
 	if page.rounds[pageOffset] != 0 {
 		// there is only a single value
 		result = append(result, RoundBalance{Round: page.rounds[pageOffset], Balance: page.values[pageOffset]})

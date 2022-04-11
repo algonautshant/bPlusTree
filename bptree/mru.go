@@ -17,8 +17,8 @@ type llist struct {
 }
 
 func getMru() mru {
-	head := &llist{}
-	tail := &llist{}
+	head := &llist{bufferIndex: -1}
+	tail := &llist{bufferIndex: -1}
 	head.next = tail
 	head.prev = nil
 	tail.next = nil
@@ -72,8 +72,8 @@ func (u *mru) updateUse(bufferIndex int) error {
 	return nil
 }
 
-func (u *mru) removeLeastUsed() int{
+func (u *mru) removeLeastUsed() (int, error){
 	luBufferIdx := u.mruListTail.prev.bufferIndex
-	u.removeUse(luBufferIdx)
-	return luBufferIdx
+	err := u.removeUse(luBufferIdx)
+	return luBufferIdx, err
 }

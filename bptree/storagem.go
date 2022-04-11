@@ -7,12 +7,6 @@ import (
 	"sync"
 )
 
-const (
-	PAGE_SIZE                   = 128                                //16384//4096
-	FLATKVLASTBUCKETOFFSET_SIZE = 14                                 //ceil(log2(PAGE_SIZE))
-	HEADER_SIZE                 = 32 + 8*FLATKVLASTBUCKETOFFSET_SIZE // 32 + 8*FLATKVLASTBUCKETOFFSET_SIZE
-)
-
 // FileOffset is where the page is written in the file
 // It is HEADER_SIZE + PAGE_SIZE*(#pages before)
 type fileOffset uint64
@@ -23,13 +17,13 @@ type fileOffset uint64
 type FileOffsetPageIndex uint64
 
 // GetElementIndexInPage returns the element array index inside the page
-func (fopi FileOffsetPageIndex) getElementIndexInPage() int {
-	return int((uint64(fopi) - HEADER_SIZE) % PAGE_SIZE)
+func (fopi FileOffsetPageIndex) getElementIndexInPage(headerSize, pageSize uint64) int {
+	return int((uint64(fopi) - headerSize) % pageSize)
 }
 
 // GetFileOffset returns the offset of the page inside the file
-func (fopi FileOffsetPageIndex) getFileOffset() fileOffset {
-	return fileOffset(uint64(fopi) - uint64(fopi.getElementIndexInPage()))
+func (fopi FileOffsetPageIndex) getFileOffset(headerSize, pageSize uint64) fileOffset {
+	return fileOffset(uint64(fopi) - uint64(fopi.getElementIndexInPage(headerSize, pageSize)))
 }
 
 func getFileOffsetPageIndex(fileOffset fileOffset, elementIndex int) FileOffsetPageIndex {
@@ -47,10 +41,12 @@ type storageManager struct {
 }
 
 type header struct {
-	pageSize        uint64
-	numberOfPages   uint64
-	newPageOffset   fileOffset
-	firstPageOffset fileOffset
+	pageSize               uint64
+	headerSize             uint64
+	flatTKBucketOffsetSize uint64
+	numberOfPages          uint64
+	newPageOffset          fileOffset
+	firstPageOffset        fileOffset
 
 	accountsHeadOffset fileOffset
 
@@ -58,10 +54,15 @@ type header struct {
 }
 
 func (sm *storageManager) writeHeader() error {
-	var hBuff [HEADER_SIZE]byte
+	hBuff := make([]byte, sm.header.headerSize, sm.header.headerSize)
 	offset := 0
 	binary.BigEndian.PutUint64(hBuff[offset:offset+8], sm.header.pageSize)
 	offset += 8
+	binary.BigEndian.PutUint64(hBuff[offset:offset+8], sm.header.headerSize)
+	offset += 8
+	binary.BigEndian.PutUint64(hBuff[offset:offset+8], sm.header.flatTKBucketOffsetSize)
+	offset += 8
+
 	binary.BigEndian.PutUint64(hBuff[offset:offset+8], sm.header.numberOfPages)
 	offset += 8
 	binary.BigEndian.PutUint64(hBuff[offset:offset+8], uint64(sm.header.newPageOffset))
@@ -78,25 +79,39 @@ func (sm *storageManager) writeHeader() error {
 	if err != nil {
 		return fmt.Errorf("storageManager writeHeader: WriteAt error at 0: %w", err)
 	}
-	if n != HEADER_SIZE {
-		return fmt.Errorf("storageManager writeHeader: wrote %d instead of %d", n, HEADER_SIZE)
+	if n != int(sm.header.headerSize) {
+		return fmt.Errorf("storageManager writeHeader: wrote %d instead of %d", n, sm.header.headerSize)
 	}
 	return nil
 }
 
 func (sm *storageManager) readHeader() error {
-	var hBuff [HEADER_SIZE]byte
-	n, err := sm.fd.ReadAt(hBuff[:], 0)
+	sizes := make([]byte, 16)
+	n, err := sm.fd.ReadAt(sizes[:], 0)
 	if err != nil {
 		return fmt.Errorf("storageManager readHeader: ReadAt 0 error: %w", err)
 	}
-	if n != HEADER_SIZE {
-		return fmt.Errorf("storageManager readHeader: should read %d read %d", HEADER_SIZE, n)
+	if n != int(16) {
+		return fmt.Errorf("storageManager readHeader: should read %d read %d", 16, n)
+	}
+	offset := 0
+	sm.header.pageSize = binary.BigEndian.Uint64(sizes[offset : offset+8])
+	offset += 8
+	sm.header.headerSize = binary.BigEndian.Uint64(sizes[offset : offset+8])
+
+	hBuff := make([]byte, sm.header.headerSize-16)
+	n, err = sm.fd.ReadAt(hBuff[:], 16)
+	if err != nil {
+		return fmt.Errorf("storageManager readHeader: ReadAt 0 error: %w", err)
+	}
+	if n != int(sm.header.headerSize-16) {
+		return fmt.Errorf("storageManager readHeader: should read %d read %d", sm.header.headerSize-16, n)
 	}
 
-	offset := 0
-	sm.header.pageSize = binary.BigEndian.Uint64(hBuff[offset : offset+8])
+	offset = 0
+	sm.header.flatTKBucketOffsetSize = binary.BigEndian.Uint64(hBuff[offset : offset+8])
 	offset += 8
+
 	sm.header.numberOfPages = binary.BigEndian.Uint64(hBuff[offset : offset+8])
 	offset += 8
 	sm.header.newPageOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
@@ -104,7 +119,7 @@ func (sm *storageManager) readHeader() error {
 	sm.header.accountsHeadOffset = fileOffset(binary.BigEndian.Uint64(hBuff[offset : offset+8]))
 	offset += 8
 
-	for x := 0; x < FLATKVLASTBUCKETOFFSET_SIZE; x++ {
+	for x := 0; x < int(sm.header.flatTKBucketOffsetSize); x++ {
 		sm.header.flatKVLastBucketOffset = append(sm.header.flatKVLastBucketOffset,
 			fileOffset(binary.BigEndian.Uint64(hBuff[offset:offset+8])))
 		offset += 8
@@ -122,26 +137,38 @@ func openStorageManager(filename string) (sm *storageManager, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// TODO: write these in the header, and veryfiy they correspond to the code when loaded
+	bPTreeKeyValuePage_maxNumberOfElements = (sm.header.pageSize - 10) / 2 / 8
+	flatKeyValuePage_maxNumberOfElements = (sm.header.pageSize - FLATKEYVALUEPAGE_HEADER_SIZE) / FLATKEYVALUEPAGE_ELEMENT_SIZE
+	bPTreeAddressValuePage_maxNumberOfElements = (sm.header.pageSize - BPTREEADDRESSVALUEPAGE_HEADER_SIZE) / BPTREEADDRESSVALUEPAGE_ELEMENT_SIZE
 	return sm, nil
 }
 
-func initStorageManager(filename string) (sm *storageManager, err error) {
+func initStorageManager(filename string, pageSize uint64) (sm *storageManager, err error) {
 	f, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0755)
 	if err != nil {
 		return nil, fmt.Errorf("storagem initStorageManager: OpenFile %s error: %w", filename, err)
 	}
+	headerSize := uint64(48 + 8 * getFlatKVLastBucketOffsetIndex(pageSize))  // 32 + 8*flatTKBucketOffsetSize
+	flatTKBucketOffsetSize := uint64(getFlatKVLastBucketOffsetIndex(pageSize)) //ceil(log2(PAGE_SIZE))
 	sm = &storageManager{fd: f}
 	sm.header = header{
-		pageSize:               PAGE_SIZE,
+		pageSize:               pageSize,
+		headerSize:             headerSize,
+		flatTKBucketOffsetSize: flatTKBucketOffsetSize,
 		numberOfPages:          0,
-		newPageOffset:          HEADER_SIZE,
-		firstPageOffset:        HEADER_SIZE,
-		flatKVLastBucketOffset: make([]fileOffset, FLATKVLASTBUCKETOFFSET_SIZE, FLATKVLASTBUCKETOFFSET_SIZE),
+		newPageOffset:          fileOffset(headerSize),
+		firstPageOffset:        fileOffset(headerSize),
+		flatKVLastBucketOffset: make([]fileOffset, flatTKBucketOffsetSize, flatTKBucketOffsetSize),
 	}
 	err = sm.writeHeader()
 	if err != nil {
 		return nil, err
 	}
+	bPTreeKeyValuePage_maxNumberOfElements = (pageSize - 10) / 2 / 8
+	flatKeyValuePage_maxNumberOfElements = (pageSize - FLATKEYVALUEPAGE_HEADER_SIZE) / FLATKEYVALUEPAGE_ELEMENT_SIZE
+	bPTreeAddressValuePage_maxNumberOfElements = (pageSize - BPTREEADDRESSVALUEPAGE_HEADER_SIZE) / BPTREEADDRESSVALUEPAGE_ELEMENT_SIZE
+
 	return sm, nil
 }
 
@@ -164,14 +191,14 @@ func (sm *storageManager) writeFirstPage(page page) error {
 		return err
 	}
 	if np != sm.header.firstPageOffset {
-		return fmt.Errorf("storageManager writeFirstPage: the first page should have offset %d but got %d", HEADER_SIZE, np)
+		return fmt.Errorf("storageManager writeFirstPage: the first page should have offset %d but got %d", sm.header.headerSize, np)
 	}
 	return nil
 }
 
 func (sm *storageManager) writePage(page page, fileOffset fileOffset) error {
-	var buffer [PAGE_SIZE]byte
-	bytes, err := page.marshal(buffer[:])
+	buffer := make([]byte, sm.header.pageSize, sm.header.pageSize)
+	bytes, err := page.marshal(buffer, int(sm.header.pageSize))
 	if err != nil {
 		return err
 	}
@@ -194,7 +221,7 @@ func (sm *storageManager) readFirstPage() (page page, err error) {
 }
 
 func (sm *storageManager) readPage(fileOffset fileOffset) (page page, err error) {
-	buffer := make([]byte, PAGE_SIZE, PAGE_SIZE)
+	buffer := make([]byte, int(sm.header.pageSize), int(sm.header.pageSize))
 
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -205,7 +232,7 @@ func (sm *storageManager) readPage(fileOffset fileOffset) (page page, err error)
 			return nil, fmt.Errorf("storageManager readPage: ReadAt %d error: %w", fileOffset, err)
 		}
 	}
-	return unmarshal(buffer[:])
+	return unmarshal(buffer[:], int(sm.header.pageSize))
 }
 
 func (sm *storageManager) close() error {
