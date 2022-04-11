@@ -7,7 +7,7 @@ import (
 
 const (
 	ADDRESS_SIZE                       = 32 // algorand address size
-	BPTREEKEYVALUEPAGE_STORAGE_ID      = 0 
+	BPTREEKEYVALUEPAGE_STORAGE_ID      = 0
 	BPTREEKEYVALUEINDEXPAGE_STORAGE_ID = 1
 	FLATKEYVALUEPAGE_STORAGE_ID        = 2
 )
@@ -38,6 +38,7 @@ type bPTreeAddressValuePage struct {
 	values    []uint64     // 2t
 	pinned    bool
 }
+
 const BPTREEADDRESSVALUEPAGE_HEADER_SIZE = 18
 const BPTREEADDRESSVALUEPAGE_ELEMENT_SIZE = ADDRESS_SIZE + 8
 
@@ -47,8 +48,9 @@ type flatKeyValuePage struct {
 	values                  []uint64
 	pinned                  bool
 }
+
 const FLATKEYVALUEPAGE_ELEMENT_SIZE = 16 // 1 round 1 value
-const FLATKEYVALUEPAGE_HEADER_SIZE  = 9 // flatKeyType (byte) nextAvailableArrayIndex (uint64)
+const FLATKEYVALUEPAGE_HEADER_SIZE = 9   // flatKeyType (byte) nextAvailableArrayIndex (uint64)
 
 type RoundBalance struct {
 	Round   uint64
@@ -64,6 +66,7 @@ func (kv *bPTreeKeyValuePage) isPinned() bool {
 }
 
 var bPTreeKeyValuePage_maxNumberOfElements uint64
+
 // unmarshal deserializes the page into BPTreeKeyValuePage page
 // byte 0: BPTreeKeyValuePage / BPTreeAddressValuePage
 // byte 1: 0 leaf=false 1 leaf=true
@@ -92,9 +95,8 @@ func (kv *bPTreeKeyValuePage) unmarshal(b []byte, pageSize int) {
 		kv.values = append(kv.values,
 			binary.BigEndian.Uint64(b[lastIndex:lastIndex+8]))
 		lastIndex = lastIndex + 8
-	}	
+	}
 }
-
 
 func (kv *bPTreeKeyValuePage) maxNumberOfElements() uint64 {
 	return bPTreeKeyValuePage_maxNumberOfElements
@@ -182,6 +184,7 @@ func (av *bPTreeAddressValuePage) unmarshal(b []byte, pageSize int) {
 }
 
 var bPTreeAddressValuePage_maxNumberOfElements uint64
+
 func (av *bPTreeAddressValuePage) maxNumberOfElements() uint64 {
 	return bPTreeAddressValuePage_maxNumberOfElements
 }
@@ -454,6 +457,7 @@ func (fp *flatKeyValuePage) isPinned() bool {
 }
 
 var flatKeyValuePage_maxNumberOfElements uint64
+
 func (fp *flatKeyValuePage) maxNumberOfElements() uint64 {
 	return flatKeyValuePage_maxNumberOfElements
 }
@@ -554,7 +558,7 @@ func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, val
 			return newIndex, nil
 		}
 
-		// otherwise, add to the existing page
+		// otherwise, add to the existing page (this is the first element, no counter added)
 		np, err := bm.readPage(nextRunPageFileIndex)
 		if err != nil {
 			return 0, err
@@ -585,6 +589,7 @@ func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, val
 		return newIndex, nil
 	}
 
+	// Now consider the continuing values, i.e. 2 extra slots are used, one for continued from, one for the count
 	page, err := bm.readPage(fileIndex)
 	if err != nil {
 		return 0, err
@@ -615,7 +620,7 @@ func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, val
 	// next run size for this is numberOfValues*2
 	nextRunSize := numberOfValues + 1
 	maxNumElts := fkvp.maxNumberOfElements()
-	if nextRunSize + 2 > maxNumElts { // +2 : one for continued at, one for the size
+	if nextRunSize+2 > maxNumElts { // +2 : one for continued at, one for the size
 		nextRunSize = maxNumElts
 	}
 
@@ -649,8 +654,11 @@ func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, val
 		newIndex := getFileOffsetPageIndex(newFileIndex, 2)
 
 		// register this page in flatKVLastBucketOffset only if it can hold another of this size
-		if newPage.nextAvailableArrayIndex+nextRunSize <= fkvp.maxNumberOfElements() {
+		if newPage.nextAvailableArrayIndex+nextRunSize+2 <= fkvp.maxNumberOfElements() {
 			bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = newFileIndex
+		} else {
+			// otherwise clear this page from the available buckets
+			bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = 0
 		}
 		return newIndex, nil
 	}
@@ -685,7 +693,7 @@ func addFlatKVPageValue(bm *bufferManager, index FileOffsetPageIndex, round, val
 	newIndex = getFileOffsetPageIndex(nextRunPageFileIndex, int(arrayIndex+2))
 
 	// register this page in flatKVLastBucketOffset only if it can hold another of this size
-	if newPage.nextAvailableArrayIndex+nextRunSize <= fkvp.maxNumberOfElements() {
+	if newPage.nextAvailableArrayIndex+nextRunSize+2 <= fkvp.maxNumberOfElements() {
 		bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = nextRunPageFileIndex
 	} else { // otherwise clear it
 		bm.sm.header.flatKVLastBucketOffset[getFlatKVLastBucketOffsetIndex(nextRunSize)] = 0
